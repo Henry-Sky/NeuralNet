@@ -1,2 +1,3 @@
 # NeuralNet
-用numpy搭神经网络的作业 
+
+A bp neural network built using only numpy
