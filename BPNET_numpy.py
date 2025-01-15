@@ -10,6 +10,7 @@ config = {
     "activation_funcs":("relu", "relu", "relu", "relu", "sigmoid"),
     "loss_func":"binary_cross_entropy",
     "batch_size":3,
+    "learning_rate":0.001,
 }
 
 activate_funcs = {
@@ -57,37 +58,49 @@ def load_data(path):
 def init_parameters():
     parameters = {}
     hidden_layers_num = len(config["hidden_layer_sizes"])
+    (w, h) = config["regular_size"]
     for index in range(hidden_layers_num):
         if index == 0:
-            (w, h) = config["regular_size"]
             parameters['b'+str(index)] = np.zeros(w * h)
         else:
             parameters['b'+str(index)] = np.zeros(np.array(config["hidden_layer_sizes"][index]))
             parameters['W'+str(index)] = np.random.randn(config["hidden_layer_sizes"][index],config["hidden_layer_sizes"][index-1]) * 0.01
     return parameters
 
-# a = func(y), Y = W * X + b, X_(i) = a_(i-1)
 def batch_forward(batch_data, parameters):
     cache = {}
     hidden_layers_num = len(config["hidden_layer_sizes"])
+    batch_size = batch_data.shape[0]
+    trans_mat = np.ones(batch_size, 1).T
     for index in range(hidden_layers_num):
         if index == 0:
-            cache['y'+str(index)] = batch_data + parameters['b' + str(index)]
+            cache['Y'+str(index)] = batch_data + trans_mat @ parameters['b' + str(index)]
         else:
-            cache['y'+str(index)] = np.dot(parameters['w'+str(index)],cache['a'+str(index-1)]) + parameters['b'+str(index)]
+            cache['Y'+str(index)] = cache['A'+str(index-1)] @ parameters['W'+str(index)] + trans_mat @ parameters['b'+str(index)]
         activation_name = config['activation_funcs'][index]
-        cache['a'+str(index)] = activate_funcs[activation_name](cache['y' + str(index)])
+        cache['A'+str(index)] = activate_funcs[activation_name](cache['Y' + str(index)])
     return cache
 
-# da / dW = da / dY * dY / dW = func_back(y) * W.T @ X
 def batch_backward(batch_label, parameters, cache):
     grad_parameters = {}
     hidden_layers_num = len(config["hidden_layer_sizes"])
-    y_pred = cache['a'+str(len(config["hidden_layer_sizes"])-1)]
-    loss_back = loss_funcs[config["loss_func"]+"_back"](batch_label, y_pred)
+    batch_label_pred = cache['a'+str(len(config["hidden_layer_sizes"])-1)]
+    loss = np.mean(loss_funcs[config["loss_func"]](batch_label_pred, batch_label))
+    loss_back = np.mean(loss_funcs[config["loss_func"]+"_back"](batch_label_pred, batch_label))
+
     for index in range(hidden_layers_num - 1, -1, -1):
-        differ_func_name = config["activation_funcs"][index] + "_back"
-        grad_parameters["db"+str(index)] = loss_back * activate_funcs[differ_func_name](cache['y' + str(index)])
+        differ_func =activate_funcs[config["activation_funcs"][index] + "_back"]
+        if index == hidden_layers_num - 1:
+            grad_parameters["db"+str(index)] = loss_back * differ_func(cache['Y'+str(index)])
+        else:
+            grad_parameters["db"+str(index)] = loss_back * differ_func(cache['Y'+str(index)]) *\
+                                               np.outer(parameters['W'+str(index+1)], grad_parameters["db"+str(index+1)])
+        if index == 0:
+            continue
+        else:
+            grad_parameters["dW"+str(index)] = loss_back * np.outer(grad_parameters["db"+str(index)], cache['A'+str(index-1)])
+    return grad_parameters
+
 
 def batch_update(data, parameters):
     batch_size = config["batch_size"]
@@ -95,7 +108,11 @@ def batch_update(data, parameters):
     for batch_index in range(0, img_num, batch_size):
         # 0, 3, 6
         batch_x = data["datas"][batch_index:min(img_num, batch_index+batch_size)]
+        cache = batch_forward(batch_x, parameters)
         batch_y = data["labels"][batch_index:min(img_num, batch_index+batch_size)]
-
+        grad_parameters = batch_backward(batch_y, parameters, cache)
+        for key in parameters.keys():
+            parameters[key] -= config["learning_rate"] * grad_parameters['d'+str(key)]
+    return parameters
 
 
