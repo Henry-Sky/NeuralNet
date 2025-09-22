@@ -1,16 +1,22 @@
 import os
 from PIL import Image
 import numpy as np
+import warnings
+
+warnings.filterwarnings('ignore', category=RuntimeWarning)
 
 config = {
     "train_path":"dogs-vs-cats/train",
     "test_path":"dogs-vs-cats/test1",
-    "regular_size":(512, 512),
-    "hidden_layer_sizes":(512*512, 256*256, 128*128, 64*64, 1),
-    "activation_funcs":("relu", "relu", "relu", "relu", "sigmoid"),
+    "regular_size":(64, 64),
+    "hidden_layer_sizes":(32*32, 8*8),
+    "activation_funcs":("relu", "relu"),
+    "output_func":"sigmoid",
     "loss_func":"binary_cross_entropy",
     "batch_size":3,
     "learning_rate":0.001,
+    "show_info":True,
+    "epsilon":1e-6,
 }
 
 activate_funcs = {
@@ -21,14 +27,14 @@ activate_funcs = {
 }
 
 loss_funcs = {
-    "binary_cross_entropy": lambda y_true, y_pred: -np.mean(y_true * np.log(y_pred) + (1 - y_true) * np.log(1 - y_pred)),
-    "binary_cross_entropy_back": lambda y_true, y_pred: (y_pred - y_true) / y_true.size,
+    "binary_cross_entropy": lambda y_true, y_out: - np.mean(y_true * np.log(y_out) + (1 - y_true) * np.log(1 - y_out)),
+    "binary_cross_entropy_back": lambda y_true, y_out: (y_out - y_true) / y_true.size,
 }
 
 def min_max_normalize(data):
     min_value = np.min(data)
     max_value = np.max(data)
-    normalized_data = (data - min_value) / (max_value - min_value)
+    normalized_data = (data - min_value) / (max_value - min_value) + config["epsilon"]
     return normalized_data
 
 def regular_img(img):
@@ -51,34 +57,66 @@ def load_data(path):
             labels.append(0)
         else:
             raise ValueError(f"Unexpected file name: {filename}")
+    imagines = np.array(imagines)
+    labels = np.array(labels)
     data = {"datas": imagines, "labels": labels, "data_num":len(imagines), "label_num":len(labels)}
     assert data["data_num"] == data["label_num"]
+
+    if config["show_info"]:
+        print("-----data load-----")
+        print(f"imagines info -max: {np.max(imagines)}, -min: {np.min(imagines)}")
+
     return data
 
 def init_parameters():
     parameters = {}
-    hidden_layers_num = len(config["hidden_layer_sizes"])
+    batch_size = config["batch_size"]
+    hidden_layer_sizes = config["hidden_layer_sizes"]
+    hidden_layer_lens = len(hidden_layer_sizes)
     (w, h) = config["regular_size"]
-    for index in range(hidden_layers_num):
+
+    for index in range(hidden_layer_lens):
+        parameters['b' + str(index)] = np.zeros((batch_size, hidden_layer_sizes[index]))
         if index == 0:
-            parameters['b'+str(index)] = np.zeros(w * h)
+            parameters['W'+str(index)] = np.random.randn(w * h, hidden_layer_sizes[index]) * 0.01
+
         else:
-            parameters['b'+str(index)] = np.zeros(np.array(config["hidden_layer_sizes"][index]))
-            parameters['W'+str(index)] = np.random.randn(config["hidden_layer_sizes"][index],config["hidden_layer_sizes"][index-1]) * 0.01
+            parameters['W'+str(index)] = np.random.randn(hidden_layer_sizes[index-1], hidden_layer_sizes[index]) * 0.01
+
+    parameters['b'+str(hidden_layer_lens)] = np.zeros((batch_size, 1))
+    parameters['W'+str(hidden_layer_lens)] = np.random.randn(hidden_layer_sizes[hidden_layer_lens-1], 1) * 0.01
+
+    if config["show_info"]:
+        print("-----param init-----")
+        for key,value in parameters.items():
+            print(f"{key}: {value.shape} -max:{np.max(value)} -min:{np.min(value)}")
+
     return parameters
 
 def batch_forward(batch_data, parameters):
     cache = {}
-    hidden_layers_num = len(config["hidden_layer_sizes"])
-    batch_size = batch_data.shape[0]
-    trans_mat = np.ones(batch_size, 1).T
-    for index in range(hidden_layers_num):
+    batch_size = config["batch_size"]
+    assert (batch_size == batch_data.shape[0])
+    hidden_layer_sizes = config["hidden_layer_sizes"]
+    hidden_layer_lens = len(hidden_layer_sizes)
+    (w, h) = config["regular_size"]
+
+    for index in range(hidden_layer_lens + 1):
         if index == 0:
-            cache['Y'+str(index)] = batch_data + trans_mat @ parameters['b' + str(index)]
+            cache['z'+str(index)] = batch_data @ parameters['W'+str(index)] + parameters['b'+str(index)]
         else:
-            cache['Y'+str(index)] = cache['A'+str(index-1)] @ parameters['W'+str(index)] + trans_mat @ parameters['b'+str(index)]
-        activation_name = config['activation_funcs'][index]
-        cache['A'+str(index)] = activate_funcs[activation_name](cache['Y' + str(index)])
+            cache['z'+str(index)] = cache['a'+str(index-1)] @ parameters['W'+str(index)] + parameters['b'+str(index)]
+        if index == hidden_layer_lens:
+            cache['a' + str(index)] = activate_funcs[config["output_func"]](cache['z' + str(index)])
+        else:
+            func = config["activation_funcs"][index]
+            cache['a' + str(index)] = activate_funcs[func](cache['z' + str(index)])
+
+    if config["show_info"]:
+        print("-----forward cache-----")
+        for key, value in cache.items():
+            print(f"{key}: {value.shape} -max:{np.max(value)} -min:{np.min(value)}")
+
     return cache
 
 def batch_backward(batch_label, parameters, cache):
@@ -101,7 +139,6 @@ def batch_backward(batch_label, parameters, cache):
             grad_parameters["dW"+str(index)] = loss_back * np.outer(grad_parameters["db"+str(index)], cache['A'+str(index-1)])
     return grad_parameters
 
-
 def batch_update(data, parameters):
     batch_size = config["batch_size"]
     img_num = data["data_num"]
@@ -115,4 +152,8 @@ def batch_update(data, parameters):
             parameters[key] -= config["learning_rate"] * grad_parameters['d'+str(key)]
     return parameters
 
+if __name__ == "__main__":
+    data = load_data(config["train_path"])["datas"]
+    param = init_parameters()
+    batch_forward(data[0:3], param)
 
