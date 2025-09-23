@@ -103,8 +103,8 @@ def batch_forward(batch_data, parameters):
 
     for index in range(hidden_layer_lens + 1):
         if index == 0:
-            cache[f"A{index-1}"] = batch_data
-            cache[f"Z{index}"] = cache[f"A{index-1}"] @ parameters[f"W{index}"] + parameters[f"b{index}"]
+            cache["X"] = batch_data
+            cache[f"Z{index}"] = cache["X"] @ parameters[f"W{index}"] + parameters[f"b{index}"]
         else:
             cache[f"Z{index}"] = cache[f"A{index-1}"] @ parameters[f"W{index}"] + parameters[f"b{index}"]
         if index == hidden_layer_lens:
@@ -138,6 +138,13 @@ def batch_backward(labels, parameters, cache):
             grad_parameters[f"dA{index}"] = loss_funcs[f"{loss_func}_back"](labels, cache[f"A{index}"])
             grad_parameters[f"dZ{index}"] = grad_parameters[f"dA{index}"] * differ_func(cache[f"Z{index}"])
             grad_parameters[f"dW{index}"] = cache[f"A{index-1}"].T @ grad_parameters[f"dZ{index}"]
+            grad_parameters[f"db{index}"] = grad_parameters[f"dA{index}"]
+        elif index == 0:
+            func = config["activation_funcs"][index]
+            differ_func = activate_funcs[f"{func}_back"]
+            grad_parameters[f"dA{index}"] = (grad_parameters[f"dA{index+1}"] * grad_parameters[f"dZ{index+1}"]) @ parameters[f"W{index+1}"].T
+            grad_parameters[f"dZ{index}"] = grad_parameters[f"dA{index}"] * differ_func(cache[f"Z{index}"])
+            grad_parameters[f"dW{index}"] = cache["X"].T @ grad_parameters[f"dZ{index}"]
             grad_parameters[f"db{index}"] = grad_parameters[f"dA{index}"]
         else:
             func = config["activation_funcs"][index]
@@ -174,7 +181,7 @@ if __name__ == "__main__":
     for iter in tqdm(range(10)):
         loss_list = []
         for i in range(0, nums-batch_size, batch_size):
-            imgs = data[i:i+batch_size]
+            imgs = data[i:i + batch_size]
             labs = label[i:i + batch_size]
             cache = batch_forward(imgs, param)
             loss = count_loss(labs, cache["Y"])
@@ -183,5 +190,3 @@ if __name__ == "__main__":
             loss_list.append(loss)
         avg_loss = np.sum(loss_list) / len(loss_list)
         print(f"iter: {iter+1}, avg_loss: {avg_loss}")
-
-
