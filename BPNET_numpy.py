@@ -1,6 +1,5 @@
 import os
 from tqdm import tqdm
-import logging
 from PIL import Image
 import numpy as np
 import warnings
@@ -11,12 +10,12 @@ config = {
     "train_path":"dogs-vs-cats/train",
     "test_path":"dogs-vs-cats/test1",
     "regular_size":(64, 64),
-    "hidden_layer_sizes":(32*32, 16*16, 8*8),
-    "activation_funcs":("relu", "relu", "relu"),
+    "hidden_layer_sizes":(32*32, 16*16),
+    "activation_funcs":("relu", "relu"),
     "output_func":"sigmoid",
     "loss_func":"binary_cross_entropy",
-    "batch_size":24,
-    "learning_rate":0.01,
+    "batch_size":64,
+    "learning_rate":0.005,
     "show_info":False,
     "epsilon":1e-6,
 }
@@ -30,7 +29,7 @@ activate_funcs = {
 
 loss_funcs = {
     "binary_cross_entropy": lambda y_true, y_out: - np.mean(y_true * np.log(y_out) + (1 - y_true) * np.log(1 - y_out)),
-    "binary_cross_entropy_back": lambda y_true, y_out: np.mean(y_out - y_true),
+    "binary_cross_entropy_back": lambda y_true, y_out: - (y_true / y_out) + (1 - y_true) / (1 - y_out),
 }
 
 def min_max_normalize(origin_data):
@@ -46,24 +45,31 @@ def regular_img(img):
     regular_data = min_max_normalize(flatten_data)
     return regular_data
 
+def shuffle_data_and_labels(order_datas, order_labels):
+    order_datas = np.array(order_datas)
+    order_labels = np.array(order_labels)
+    indices = np.random.permutation(len(order_datas))
+    shuffled_datas = order_datas[indices]
+    shuffled_labels = order_labels[indices]
+    return shuffled_datas, shuffled_labels
+
 def load_data(path):
     imagines = []
-    labels = []
+    img_labels = []
     for filename in os.listdir(path):
         img = Image.open(os.path.join(path, filename))
         regular_data = regular_img(img)
         imagines.append(regular_data)
         if filename[:3].lower() == "dog":
-            labels.append(1)
+            img_labels.append(1)
         elif filename[:3].lower() == "cat":
-            labels.append(0)
+            img_labels.append(0)
         else:
             raise ValueError(f"Unexpected file name: {filename}")
-    imagines = np.array(imagines)
-    labels = np.array(labels)
-    nums = len(imagines)
-    assert nums == len(labels)
-    data = {"datas": imagines, "labels": labels, "nums": nums}
+    shuffle_imgs, shuffle_labels = shuffle_data_and_labels(imagines, img_labels)
+    data_nums = len(shuffle_imgs)
+    assert data_nums == len(shuffle_labels)
+    data = {"datas": shuffle_imgs, "labels": shuffle_labels, "nums": data_nums}
 
     if config["show_info"]:
         print("-----data load-----")
@@ -78,16 +84,18 @@ def init_parameters():
     hidden_layer_lens = len(hidden_layer_sizes)
     (w, h) = config["regular_size"]
 
+    weight_scale = 0.0001
+
     for index in range(hidden_layer_lens):
-        parameters['b' + str(index)] = np.zeros((batch_size, hidden_layer_sizes[index]))
+        parameters[f"b{index}"] = np.zeros((batch_size, hidden_layer_sizes[index]))
         if index == 0:
-            parameters['W'+str(index)] = np.random.randn(w * h, hidden_layer_sizes[index]) * 0.01
+            parameters[f"W{index}"] = np.random.randn(w * h, hidden_layer_sizes[index]) * weight_scale
 
         else:
-            parameters['W'+str(index)] = np.random.randn(hidden_layer_sizes[index-1], hidden_layer_sizes[index]) * 0.01
+            parameters[f"W{index}"] = np.random.randn(hidden_layer_sizes[index-1], hidden_layer_sizes[index]) * weight_scale
 
-    parameters['b'+str(hidden_layer_lens)] = np.zeros((batch_size, 1))
-    parameters['W'+str(hidden_layer_lens)] = np.random.randn(hidden_layer_sizes[hidden_layer_lens-1], 1) * 0.01
+    parameters[f"b{hidden_layer_lens}"] = np.zeros((batch_size, 1))
+    parameters[f"W{hidden_layer_lens}"] = np.random.randn(hidden_layer_sizes[hidden_layer_lens-1], 1) * weight_scale
 
     if config["show_info"]:
         print("-----param init-----")
@@ -97,61 +105,63 @@ def init_parameters():
     return parameters
 
 def batch_forward(batch_data, parameters):
-    cache = {}
+    batch_cache = {}
     hidden_layer_sizes = config["hidden_layer_sizes"]
     hidden_layer_lens = len(hidden_layer_sizes)
 
     for index in range(hidden_layer_lens + 1):
         if index == 0:
-            cache["X"] = batch_data
-            cache[f"Z{index}"] = cache["X"] @ parameters[f"W{index}"] + parameters[f"b{index}"]
+            batch_cache["X"] = batch_data
+            batch_cache[f"Z{index}"] = batch_cache["X"] @ parameters[f"W{index}"] + parameters[f"b{index}"]
         else:
-            cache[f"Z{index}"] = cache[f"A{index-1}"] @ parameters[f"W{index}"] + parameters[f"b{index}"]
+            batch_cache[f"Z{index}"] = batch_cache[f"A{index-1}"] @ parameters[f"W{index}"] + parameters[f"b{index}"]
         if index == hidden_layer_lens:
-            cache[f"A{index}"] = activate_funcs[config["output_func"]](cache[f"Z{index}"])
-            cache["Y"] = cache[f"A{index}"]
+            batch_cache[f"A{index}"] = activate_funcs[config["output_func"]](batch_cache[f"Z{index}"])
+            batch_cache["Y"] = batch_cache[f"A{index}"]
         else:
             func = config["activation_funcs"][index]
-            cache[f"A{index}"] = activate_funcs[func](cache[f"Z{index}"])
+            batch_cache[f"A{index}"] = activate_funcs[func](batch_cache[f"Z{index}"])
 
     if config["show_info"]:
         print("-----forward cache-----")
-        for key, value in cache.items():
+        for key, value in batch_cache.items():
             print(f"{key}: {value.shape} -max:{np.max(value)} -min:{np.min(value)}")
 
-    return cache
+    return batch_cache
 
 def count_loss(y_true, y_out):
     func = config["loss_func"]
     return loss_funcs[func](y_true, y_out)
 
-def batch_backward(labels, parameters, cache):
+def batch_backward(batch_labels, parameters, batch_cache):
     grad_parameters = {}
+    batch_size = config["batch_size"]
     hidden_layer_sizes = config["hidden_layer_sizes"]
     hidden_layer_lens = len(hidden_layer_sizes)
+    batch_labels = batch_labels.reshape(batch_size, 1)
 
     for index in range(hidden_layer_lens , -1, -1):
         if index == hidden_layer_lens:
             func = config["output_func"]
             loss_func = config["loss_func"]
             differ_func = activate_funcs[f"{func}_back"]
-            grad_parameters[f"dA{index}"] = loss_funcs[f"{loss_func}_back"](labels, cache[f"A{index}"])
-            grad_parameters[f"dZ{index}"] = grad_parameters[f"dA{index}"] * differ_func(cache[f"Z{index}"])
-            grad_parameters[f"dW{index}"] = cache[f"A{index-1}"].T @ grad_parameters[f"dZ{index}"]
+            grad_parameters[f"dA{index}"] = loss_funcs[f"{loss_func}_back"](batch_labels, batch_cache[f"Y"])
+            grad_parameters[f"dZ{index}"] = grad_parameters[f"dA{index}"] * differ_func(batch_cache[f"Z{index}"])
+            grad_parameters[f"dW{index}"] = batch_cache[f"A{index-1}"].T @ grad_parameters[f"dZ{index}"]
             grad_parameters[f"db{index}"] = grad_parameters[f"dA{index}"]
         elif index == 0:
             func = config["activation_funcs"][index]
             differ_func = activate_funcs[f"{func}_back"]
             grad_parameters[f"dA{index}"] = (grad_parameters[f"dA{index+1}"] * grad_parameters[f"dZ{index+1}"]) @ parameters[f"W{index+1}"].T
-            grad_parameters[f"dZ{index}"] = grad_parameters[f"dA{index}"] * differ_func(cache[f"Z{index}"])
-            grad_parameters[f"dW{index}"] = cache["X"].T @ grad_parameters[f"dZ{index}"]
+            grad_parameters[f"dZ{index}"] = grad_parameters[f"dA{index}"] * differ_func(batch_cache[f"Z{index}"])
+            grad_parameters[f"dW{index}"] = batch_cache["X"].T @ grad_parameters[f"dZ{index}"]
             grad_parameters[f"db{index}"] = grad_parameters[f"dA{index}"]
         else:
             func = config["activation_funcs"][index]
             differ_func = activate_funcs[f"{func}_back"]
             grad_parameters[f"dA{index}"] = (grad_parameters[f"dA{index+1}"] * grad_parameters[f"dZ{index+1}"]) @ parameters[f"W{index+1}"].T
-            grad_parameters[f"dZ{index}"] = grad_parameters[f"dA{index}"] * differ_func(cache[f"Z{index}"])
-            grad_parameters[f"dW{index}"] = cache[f"A{index-1}"].T @ grad_parameters[f"dZ{index}"]
+            grad_parameters[f"dZ{index}"] = grad_parameters[f"dA{index}"] * differ_func(batch_cache[f"Z{index}"])
+            grad_parameters[f"dW{index}"] = batch_cache[f"A{index-1}"].T @ grad_parameters[f"dZ{index}"]
             grad_parameters[f"db{index}"] = grad_parameters[f"dA{index}"]
 
     if config["show_info"]:
@@ -162,31 +172,29 @@ def batch_backward(labels, parameters, cache):
 
     return grad_parameters
 
-def param_update(param, grad):
+def param_update(parameters, grad):
     learn_rate = config["learning_rate"]
-
-    for key, value in param.items():
+    for key, value in parameters.items():
         value -= learn_rate  * grad[f"d{key}"]
-
-    return param
+    return parameters
 
 if __name__ == "__main__":
     ld = load_data(config["train_path"])
-    data = ld["datas"]
-    label = ld["labels"]
+    datas = ld["datas"]
+    labels = ld["labels"]
     nums = ld["nums"]
     batch_size = config["batch_size"]
 
     param = init_parameters()
-    for iter in tqdm(range(10)):
+    for iter in tqdm(range(100)):
         loss_list = []
         for i in range(0, nums-batch_size, batch_size):
-            imgs = data[i:i + batch_size]
-            labs = label[i:i + batch_size]
+            imgs = datas[i:i + batch_size]
+            labs = labels[i:i + batch_size]
             cache = batch_forward(imgs, param)
             loss = count_loss(labs, cache["Y"])
             grad = batch_backward(labs, param, cache)
             param = param_update(param, grad)
             loss_list.append(loss)
         avg_loss = np.sum(loss_list) / len(loss_list)
-        print(f"iter: {iter+1}, avg_loss: {avg_loss}")
+        print(f"iter: {iter+1}, avg_loss: {avg_loss:.10f}")
