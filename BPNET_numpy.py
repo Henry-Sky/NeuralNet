@@ -196,5 +196,5 @@ if __name__ == "__main__":
             grad = batch_backward(labs, param, cache)
             param = param_update(param, grad)
             loss_list.append(loss)
-        avg_loss = np.sum(loss_list) / len(loss_list)
+        avg_loss = sum(loss_list) / len(loss_list)
         print(f"iter: {iter+1}, avg_loss: {avg_loss:.10f}")

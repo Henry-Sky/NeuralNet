@@ -5,6 +5,20 @@ from PIL import Image
 import torch.nn.functional as F
 from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
+import torch.optim as optim
+
+def get_device():
+    if torch.cuda.is_available():
+        device = torch.device("cuda")  # 优先选择 CUDA 设备
+        print("Using CUDA device.")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")  # 如果 CUDA 不可用，选择 MPS 设备
+        print("Using MPS device.")
+    else:
+        device = torch.device("cpu")  # 如果 CUDA 和 MPS 都不可用，选择 CPU
+        print("Using CPU device.")
+    return device
 
 config = {
     "train_path":"dogs-vs-cats/train",
@@ -18,11 +32,16 @@ config = {
     "learning_rate":0.005,
     "show_info":False,
     "epsilon":1e-6,
+    "device":get_device(),
 }
 
-func = {
+activate_funcs = {
     "relu":F.relu,
     "sigmoid":F.sigmoid,
+}
+
+loss_funcs = {
+    "binary_cross_entropy": lambda y_true, y_out: - (y_true * torch.log(y_out) + (1 - y_true) * torch.log(1 - y_out)),
 }
 
 class CustomDataset(Dataset):
@@ -55,21 +74,21 @@ class BPNet(nn.Module):
         super(BPNet, self).__init__()
         w, h = config["regular_size"]
         last_dim = w * h
-        self.layer = []
+        self.layers = nn.ModuleList()
         for hidden_size in config["hidden_layer_sizes"]:
-            fc = nn.Linear(last_dim, hidden_size)
-            self.layer.append(fc)
+            fc = nn.Linear(last_dim, hidden_size).to(config["device"])
+            self.layers.append(fc)
             last_dim = hidden_size
-        self.layer.append(nn.Linear(last_dim, 1))
+        self.layers.append(nn.Linear(last_dim, 1).to(config["device"]))
         self.func_names = list(config["activation_funcs"])
         self.func_names.append(config["output_func"])
 
     def forward(self, x):
         x = torch.flatten(x, start_dim=1)
-        for layer, func_name in zip(self.layer, self.func_names):
+        for layer, func_name in zip(self.layers, self.func_names):
             x = layer(x)
-            x = func[func_name](x)
-        return x
+            x = activate_funcs[func_name](x)
+        return torch.flatten(x)
 
 def load_data(path):
     w, h = config["regular_size"]
@@ -82,12 +101,26 @@ def load_data(path):
     ds = CustomDataset(path, transform)
     return DataLoader(ds, batch_size=bs)
 
+def count_loss(y_true, y_out):
+    assert (y_true.shape == y_out.shape)
+    func = config["loss_func"]
+    losses = loss_funcs[func](y_true, y_out)
+    return torch.mean(losses)
 
 if __name__ == "__main__":
-    datas = load_data(config["train_path"])
-    iterator = iter(datas)
-    images, labels = next(iterator)
-
     net = BPNet()
-    y = net.forward(images)
-    print(y)
+    dataloader = load_data(config["train_path"])
+    optimizer = optim.SGD(net.parameters(), lr=config["learning_rate"])
+
+    for iter in tqdm(range(100)):
+        loss_list = []
+        for inputs, labels in dataloader:
+            inputs, labels = inputs.to(config["device"]), labels.to(config["device"])
+            output = net.forward(inputs)
+            loss = count_loss(labels, output)
+            loss_list.append(loss.item())
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+        avg_loss = sum(loss_list) / len(loss_list)
+        print(f"iter: {iter+1}, avg_loss: {avg_loss:.8f}")
