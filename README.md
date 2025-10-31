@@ -13,6 +13,13 @@
 
 ### （1）用“numpy”实现
 
+    BPNET_numpy.py
 
 ### （2）用“pytorch”实现
+
+    BPNET_torch.py
+
+### （3）逐步构建
+
+    BP_step.ipynb
 
